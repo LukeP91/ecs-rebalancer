@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
+	"os"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -14,30 +14,36 @@ import (
 // 	log.Printf("Cloudwatch event: %v", event.Detail)
 
 // }
+var clusterName = os.Getenv("ECS_CLUSTER_NAME")
 
 func main() {
 	// lambda.Start(HandleRequest)
-	// Load the Shared AWS Configuration (~/.aws/config)
-	cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithSharedConfigProfile("documobi"), config.WithRegion("eu-west-1"))
+	cfg, err := config.LoadDefaultConfig(
+		context.TODO(),
+	)
 	if err != nil {
 		log.Fatal(err)
 	}
-	ecs_client := ecs.NewFromConfig(cfg)
-	services, err := get_services(ecs_client)
+	ecsClient := ecs.NewFromConfig(cfg)
+	services, err := getServices(ecsClient)
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	fmt.Println("Service arns: ", services)
+	err = updateServices(ecsClient, services)
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
-func get_services(ecs_client *ecs.Client) ([]string, error) {
-	services := make([]string, 1)
+func getServices(client *ecs.Client) ([]string, error) {
+	services := make([]string, 0)
 	for {
-		response, err := ecs_client.ListServices(context.TODO(), &ecs.ListServicesInput{Cluster: aws.String("staging-portal-cluster")})
+		response, err := client.ListServices(
+			context.TODO(),
+			&ecs.ListServicesInput{Cluster: aws.String(clusterName)},
+		)
 		if err != nil {
-			log.Fatal(err)
-			return make([]string, 0), err
+			return nil, err
 		}
 		services = append(services, response.ServiceArns...)
 		if response.NextToken == nil {
@@ -46,4 +52,39 @@ func get_services(ecs_client *ecs.Client) ([]string, error) {
 	}
 
 	return services, nil
+}
+
+func updateServices(client *ecs.Client, services []string) error {
+	response, err := client.DescribeServices(
+		context.TODO(),
+		&ecs.DescribeServicesInput{
+			Cluster:  aws.String(clusterName),
+			Services: services,
+		},
+	)
+	if err != nil {
+		return err
+	}
+
+	describedServices := response.Services
+	for _, service := range describedServices {
+		log.Println("Service to be updated", *service.ServiceName)
+		_, err = client.UpdateService(
+			context.TODO(),
+			&ecs.UpdateServiceInput{
+				Cluster:            aws.String(clusterName),
+				ForceNewDeployment: true,
+				Service:            aws.String(*service.ServiceArn),
+			},
+		)
+		if err != nil {
+			return err
+		}
+		log.Println(
+			"Updated service:",
+			*service.ServiceName,
+			"with new task definition.",
+		)
+	}
+	return nil
 }
